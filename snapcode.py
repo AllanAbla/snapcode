@@ -5,25 +5,23 @@ from datetime import datetime
 import json
 
 APP_CONFIG_FILE = "app_config.json"
-OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__)) 
-
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(BASE_DIR, APP_CONFIG_FILE)
+OUTPUTS_BASE_DIR = os.path.join(BASE_DIR, "outputs")
 
 def load_app_data():
-    config_path = os.path.join(OUTPUT_DIR, APP_CONFIG_FILE)
-    if os.path.exists(config_path):
+    if os.path.exists(CONFIG_PATH):
         try:
-            with open(config_path, 'r') as f:
+            with open(CONFIG_PATH, 'r', encoding="utf-8") as f:
                 return json.load(f)
         except (json.JSONDecodeError, FileNotFoundError):
             return {"presets": {}, "version": 0}
     return {"presets": {}, "version": 0}
 
-
 def save_app_data(data):
-    config_path = os.path.join(OUTPUT_DIR, APP_CONFIG_FILE)
-    with open(config_path, 'w') as f:
-        json.dump(data, f, indent=4)
-
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    with open(CONFIG_PATH, 'w', encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
 def get_next_version(app_data) -> tuple[str, int]:
     current_version_num = app_data.get("version", 0)
@@ -32,7 +30,6 @@ def get_next_version(app_data) -> tuple[str, int]:
     app_data["version"] = next_version_num
     
     return f"v{next_version_num}", next_version_num
-
 
 def generate_filetree(files: list[str]) -> str:
     tree = ""
@@ -57,9 +54,12 @@ def write_output(version: str, code_base_name: str, files_data: list[tuple[str, 
         return
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
+
+    preset_output_dir = os.path.join(OUTPUTS_BASE_DIR, preset_name)
+    os.makedirs(preset_output_dir, exist_ok=True)
+
     output_filename = f"{preset_name}_{timestamp}.txt"
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
+    output_path = os.path.join(preset_output_dir, output_filename)
 
     header = f"### CODEBASE SNAPSHOT ({version})\n"
     header += f"### Código Base: {code_base_name}\n"
@@ -79,7 +79,6 @@ def write_output(version: str, code_base_name: str, files_data: list[tuple[str, 
 
     print(f"[OK] Saída escrita em: {output_path}")
     messagebox.showinfo("Sucesso", f"Snapshot gerado com sucesso!\nArquivo: {output_path}")
-
 
 class PresetManagerApp:
     def __init__(self, master):
@@ -155,10 +154,10 @@ class PresetManagerApp:
                 "excluded_files": []
             }
             self.presets[new_name] = initial_data
+            self.app_data["presets"] = self.presets
             save_app_data(self.app_data)
             
             self.master.withdraw()
-            # CORREÇÃO APLICADA: is_new=True removido
             FileSelectorApp(tk.Toplevel(self.master), new_name, initial_data, self.return_to_menu, self.app_data)
 
     def delete_selected_preset(self, silent=False):
@@ -174,6 +173,7 @@ class PresetManagerApp:
             return
 
         del self.presets[preset_name]
+        self.app_data["presets"] = self.presets
         save_app_data(self.app_data)
         
         if not silent:
@@ -190,7 +190,6 @@ class PresetManagerApp:
     def close_app(self):
         self.master.quit()
         self.master.destroy()
-
 
 class FileSelectorApp:
     def __init__(self, master, preset_name, preset_data, return_callback, app_data):
@@ -266,12 +265,32 @@ class FileSelectorApp:
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
         
-        for file in self.all_files:
-            is_checked = file not in self.initial_excluded_files
-            var = tk.BooleanVar(value=is_checked)
-            cb = tk.Checkbutton(self.scrollable_frame, text=file, variable=var, anchor="w")
-            cb.pack(fill="x")
-            self.checkbox_vars[file] = var
+        grouped_by_dir: dict[str, list[str]] = {}
+        for path in self.all_files:
+            dir_path = os.path.dirname(path)
+            grouped_by_dir.setdefault(dir_path, []).append(path)
+
+        for dir_path in sorted(grouped_by_dir.keys(), key=lambda d: (d != "", d.lower())):
+            display_name = dir_path if dir_path else "[raiz]"
+            group_frame = tk.LabelFrame(self.scrollable_frame, text=display_name, padx=5, pady=5)
+            group_frame.pack(fill="x", expand=True, padx=5, pady=5)
+
+            row = 0
+            col = 0
+            for file_path in sorted(grouped_by_dir[dir_path]):
+                is_checked = file_path not in self.initial_excluded_files
+                var = tk.BooleanVar(value=is_checked)
+                file_label = os.path.basename(file_path)
+
+                cb = tk.Checkbutton(group_frame, text=file_label, variable=var, anchor="w", justify="left")
+                cb.grid(row=row, column=col, sticky="w", padx=5, pady=2)
+
+                self.checkbox_vars[file_path] = var
+
+                col += 1
+                if col >= 3:
+                    col = 0
+                    row += 1
         
         quick_action_frame = tk.Frame(self.master)
         quick_action_frame.pack(pady=5)
@@ -283,7 +302,6 @@ class FileSelectorApp:
                   bg='green', fg='white', font=('Arial', 10, 'bold')).pack(pady=10)
                   
         tk.Button(self.master, text="Cancelar e Voltar ao Menu", command=self.cancel_and_return).pack(pady=5)
-
 
     def select_all(self):
         for var in self.checkbox_vars.values():
@@ -324,6 +342,9 @@ class FileSelectorApp:
         self.return_callback()
 
     def save_current_preset(self, excluded_files):
+        if "presets" not in self.app_data:
+            self.app_data["presets"] = {}
+
         if self.preset_name in self.app_data["presets"]:
             self.app_data["presets"][self.preset_name]["excluded_files"] = excluded_files
         else:
@@ -332,15 +353,13 @@ class FileSelectorApp:
                 "excluded_files": excluded_files
             }
 
-
 def main_gui():
     root = tk.Tk()
-    root.geometry("450x350")
+    root.geometry("600x500")
     
     PresetManagerApp(root)
     
     root.mainloop()
-
 
 if __name__ == "__main__":
     main_gui()
